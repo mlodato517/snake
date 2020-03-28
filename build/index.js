@@ -4,8 +4,10 @@ const SNAKE_COLOR = 'green'
 const FOOD_COLOR = 'red'
 
 document.addEventListener('DOMContentLoaded', function() {
-  const snake = new Snake(4, 0, 0, BLOCK_SIZE, SNAKE_COLOR)
+  const canvas = document.getElementById('root')
+  const gameScreen = new GameScreen(canvas, GAME_SIZE, FOOD_COLOR)
 
+  const snake = new Snake(4, 0, 0, BLOCK_SIZE, SNAKE_COLOR, gameScreen.context)
   document.addEventListener('keydown', function(e) {
     if (e.code === 'ArrowUp' || e.code === 'KeyW') {
       snake.transitionUp()
@@ -18,8 +20,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   })
 
-  const canvas = document.getElementById('root')
-  const gameScreen = new GameScreen(canvas, GAME_SIZE, FOOD_COLOR)
 
   let lastDrawTime = 0
   let timePerFrame = 100
@@ -36,7 +36,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     if (gameScreen.validateSnake(snake)) {
-      gameScreen.draw(snake)
       window.requestAnimationFrame(tick)
     } else {
       alert('You lose!')
@@ -47,20 +46,15 @@ document.addEventListener('DOMContentLoaded', function() {
 })
 
 class Snake {
-  constructor(length, x, y, segmentSize, color) {
+  constructor(length, x, y, segmentSize, color, context) {
     this.vx = 1
     this.vy = 0
     this.segmentSize = segmentSize
     this.color = color
-    this.initializeFrom(length, x, y)
+    this.context = context
     this.segmentsLeftToGrow = 0
-  }
 
-  draw(canvasContext2D) {
-    canvasContext2D.fillStyle = this.color
-    this.snake.forEach(function(point) {
-      canvasContext2D.fillRect(point.x, point.y, this.segmentSize, this.segmentSize)
-    }, this)
+    this.initializeFrom(length, x, y)
   }
 
   initializeFrom(length, x, y) {
@@ -73,6 +67,8 @@ class Snake {
         y + (i * this.vy * this.segmentSize),
       )
       this.snake.push(point)
+
+      this.addPoint(point)
     }
 
     this.headIdx = 0
@@ -107,9 +103,13 @@ class Snake {
       this.headIdx = 0
     } else {
       const tailIdx = (this.headIdx + this.snake.length - 1) % this.snake.length
+      this.removePoint(this.snake[tailIdx])
+
       this.snake[tailIdx] = newHead
       this.headIdx = tailIdx
     }
+
+    this.addPoint(newHead)
   }
 
   transitionUp() {
@@ -169,6 +169,15 @@ class Snake {
     return this.head().key === point.key
   }
 
+  addPoint(point) {
+    this.context.fillStyle = this.color
+    this.context.fillRect(point.x, point.y, this.segmentSize, this.segmentSize)
+  }
+
+  removePoint(point) {
+    this.context.clearRect(point.x, point.y, this.segmentSize, this.segmentSize)
+  }
+
   valid() {
     const points = {}
     for (let i = 0; i < this.snake.length; ++i) {
@@ -206,12 +215,7 @@ class GameScreen {
       Math.floor(Math.random() * (this.canvas.width / BLOCK_SIZE)) * BLOCK_SIZE,
       Math.floor(Math.random() * (this.canvas.height / BLOCK_SIZE)) * BLOCK_SIZE,
     )
-  }
-
-  draw(snake) {
-    this.context.clearRect(0, 0, this.canvas.width, this.canvas.height)
     this.drawFood()
-    snake.draw(this.context)
   }
 
   drawFood() {
