@@ -18,3 +18,5 @@ rustc --version
 ## Running
 
 Start the server with `cargo run --release`.
+
+Open the `index.html` file in a browser.
