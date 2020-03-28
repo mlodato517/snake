@@ -59,6 +59,7 @@ class Snake {
 
   initializeFrom(length, x, y) {
     this.snake = []
+    this.nonHeadPointKeys = {}
 
     // Build from tail to head so head is at 0
     for (let i = length; i > 0; --i) {
@@ -69,9 +70,11 @@ class Snake {
       this.snake.push(point)
 
       this.addPoint(point)
+      this.nonHeadPointKeys[point.key] = true
     }
 
     this.headIdx = 0
+    delete this.nonHeadPointKeys[this.head().key]
   }
 
   move() {
@@ -85,6 +88,8 @@ class Snake {
       this.goRight()
     }
     const currentHead = this.snake[this.headIdx]
+    this.nonHeadPointKeys[currentHead.key] = true
+
     const newHead = new Point(
       currentHead.x + (this.vx * this.segmentSize),
       currentHead.y + (this.vy * this.segmentSize),
@@ -105,6 +110,7 @@ class Snake {
       const tailIdx = (this.headIdx + this.snake.length - 1) % this.snake.length
       this.removePoint(this.snake[tailIdx])
 
+      delete this.nonHeadPointKeys[this.snake[tailIdx].key]
       this.snake[tailIdx] = newHead
       this.headIdx = tailIdx
     }
@@ -179,22 +185,16 @@ class Snake {
   }
 
   valid() {
-    const points = {}
-    for (let i = 0; i < this.snake.length; ++i) {
-      const point = this.snake[i]
-
-      if (points[point.key]) return false
-      points[point.key] = true
-    }
-    return true
+    return !this.nonHeadPointKeys[this.head().key]
   }
 }
 
+const maxPow = 15
 class Point {
   constructor(x, y) {
     this.x = x
     this.y = y
-    this.key = this.x << 16 | this.y
+    this.key = x << maxPow | y
   }
 }
 
