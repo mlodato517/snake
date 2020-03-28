@@ -1,5 +1,5 @@
-const GAME_SIZE = 400
-const BLOCK_SIZE = 10
+const GAME_SIZE = 900
+const BLOCK_SIZE = 1
 const SNAKE_COLOR = 'green'
 const FOOD_COLOR = 'red'
 
@@ -7,7 +7,7 @@ document.addEventListener('DOMContentLoaded', function() {
   const canvas = document.getElementById('root')
   const gameScreen = new GameScreen(canvas, GAME_SIZE, FOOD_COLOR)
 
-  const snake = new Snake(4, 0, 0, BLOCK_SIZE, SNAKE_COLOR, gameScreen.context)
+  const snake = new Snake(60, 0, 0, BLOCK_SIZE, SNAKE_COLOR, gameScreen.context)
   document.addEventListener('keydown', function(e) {
     if (e.code === 'ArrowUp' || e.code === 'KeyW') {
       snake.transitionUp()
@@ -22,7 +22,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 
   let lastDrawTime = 0
-  let timePerFrame = 100
+  let timePerFrame = 1
   function tick(tickStartTime) {
     if (tickStartTime - lastDrawTime > timePerFrame) {
       lastDrawTime = tickStartTime
