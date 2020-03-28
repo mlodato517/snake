@@ -1,9 +1,10 @@
 [package]
 name = "tic-tac-toe"
 version = "0.1.0"
-authors = ["Mark Lodato <mark@gnar.dog>"]
+authors = ["Mark Lodato <mlodato517@gmail.com>"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+tungstenite = "0.10.1"
