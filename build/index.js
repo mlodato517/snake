@@ -24,6 +24,7 @@ document.addEventListener('DOMContentLoaded', function() {
   let lastDrawTime = 0
   let timePerFrame = 1
   function tick(tickStartTime) {
+    let snakeAlive = true
     if (tickStartTime - lastDrawTime > timePerFrame) {
       lastDrawTime = tickStartTime
 
@@ -32,10 +33,12 @@ document.addEventListener('DOMContentLoaded', function() {
         snake.growBy(2)
         timePerFrame -= 1
         gameScreen.createNewFood()
+      } else {
+        snakeAlive = gameScreen.validateSnake(snake)
       }
     }
 
-    if (gameScreen.validateSnake(snake)) {
+    if (snakeAlive) {
       window.requestAnimationFrame(tick)
     } else {
       alert('You lose!')
