@@ -22,7 +22,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
   ws.addEventListener('open', function() {
     function receiveAndRun({ data }) {
-      console.log(data)
       if (data.startsWith('id:')) {
         const id = Number(data.substring(3))
 
@@ -47,7 +46,7 @@ function run(id, ws) {
   game.createNewFood()
 
   let lastDrawTime = 0
-  let timePerFrame = 500
+  let timePerFrame = 100
   function tick(tickStartTime) {
     let valid = true
     if (tickStartTime - lastDrawTime > timePerFrame) {
@@ -94,6 +93,7 @@ class Snake {
     this.segmentSize = segmentSize
     this.segmentsLeftToGrow = 0
 
+    this.directionChangeQueue = []
     this.goRight()
   }
 
@@ -136,6 +136,9 @@ class Snake {
   }
 
   move() {
+    const directionChange = this.directionChangeQueue.shift()
+    if (directionChange) directionChange()
+
     let removedPoint
     if (this.growing()) {
       this.segmentsLeftToGrow--
@@ -155,23 +158,43 @@ class Snake {
   }
 
   goUp() {
+    if (this.goingDown) return
     this.clearDirection()
     this.goingUp = true
   }
 
   goDown() {
+    if (this.goingUp) return
     this.clearDirection()
     this.goingDown = true
   }
 
   goLeft() {
+    if (this.goingRight) return
     this.clearDirection()
     this.goingLeft = true
   }
 
   goRight() {
+    if (this.goingLeft) return
     this.clearDirection()
     this.goingRight = true
+  }
+
+  queueUp() {
+    this.directionChangeQueue.push(this.goUp.bind(this))
+  }
+
+  queueDown() {
+    this.directionChangeQueue.push(this.goDown.bind(this))
+  }
+
+  queueLeft() {
+    this.directionChangeQueue.push(this.goLeft.bind(this))
+  }
+
+  queueRight() {
+    this.directionChangeQueue.push(this.goRight.bind(this))
   }
 
   head() {
@@ -277,17 +300,32 @@ class Game {
 
   addArrowKeyHandlers() {
     const snake = this.snakes[this.id]
-    document.addEventListener('keydown', function(e) {
-      if (e.code === 'ArrowUp' || e.code === 'KeyW') {
-        snake.goUp()
-      } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {
-        snake.goDown()
-      } else if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
-        snake.goLeft()
-      } else if (e.code === 'ArrowRight' || e.code === 'KeyD') {
-        snake.goRight()
+    window.addEventListener('keydown', function(e) {
+      if (e.defaultPrevented) {
+        return;
       }
-    })
+
+      switch(e.code) {
+        case "KeyS":
+        case "ArrowDown":
+          snake.queueDown()
+          break
+        case "KeyW":
+        case "ArrowUp":
+          snake.queueUp()
+          break
+        case "KeyA":
+        case "ArrowLeft":
+          snake.queueLeft()
+          break
+        case "KeyD":
+        case "ArrowRight":
+          snake.queueRight()
+          break
+      }
+
+      e.preventDefault()
+    }, true)
   }
 
   createNewFood() {
