@@ -45,11 +45,9 @@ async fn handle_websocket_connection(
     let (outgoing, incoming) = ws_stream.split();
 
     let broadcast_incoming = incoming.try_for_each(|msg| {
-        // println!(
-        //     "Received a message from {}: {}",
-        //     addr,
-        //     msg.to_text().unwrap()
-        // );
+        // println!("{} | {:?}", addr, msg);
+        if msg.is_close() { return future::ok(()) }
+
         let peers = peer_map.lock().unwrap();
 
         // We want to broadcast the message to everyone except ourselves.
