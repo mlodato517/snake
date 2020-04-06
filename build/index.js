@@ -48,6 +48,8 @@ function run(id, ws) {
   let lastDrawTime = 0
   let timePerFrame = 100
   function tick(tickStartTime) {
+    if (!playing) return
+
     let valid = true
     if (tickStartTime - lastDrawTime > timePerFrame) {
       lastDrawTime = tickStartTime
@@ -82,6 +84,11 @@ function run(id, ws) {
     } else if (message.isDrawSnakeMessage()) {
       game.drawForeignSnake(message.receivedId, message.points)
     }
+  })
+
+  ws.addEventListener('close', function() {
+    playing = false
+    alert('Served closed socket')
   })
 }
 
