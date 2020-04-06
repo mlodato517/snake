@@ -47,6 +47,7 @@ function run(id, ws) {
 
   let lastDrawTime = 0
   let timePerFrame = 100
+  let playing = true
   function tick(tickStartTime) {
     if (!playing) return
 
