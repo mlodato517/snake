@@ -1,233 +1,428 @@
-const GAME_SIZE = 400
+const GAME_SIZE = 500
 const BLOCK_SIZE = 10
-const SNAKE_COLOR = 'green'
-const FOOD_COLOR = 'red'
+const INITIAL_SNAKE_LENGTH = 4
+const COLORS = [
+  'red',
+  'blue',
+  'green',
+  'black',
+  'pink',
+  'purple',
+  'orange',
+]
+function colorForId(id) {
+  const index = id - 1
+  return COLORS[index % COLORS.length]
+}
 
+const host = '127.0.0.1:3012'
 document.addEventListener('DOMContentLoaded', function() {
-  const canvas = document.getElementById('root')
-  const gameScreen = new GameScreen(canvas, GAME_SIZE, FOOD_COLOR)
+  const url = 'ws://' + host
+  const ws = new WebSocket(url);
 
-  const snake = new Snake(4, 0, 0, BLOCK_SIZE, SNAKE_COLOR, gameScreen.context)
-  document.addEventListener('keydown', function(e) {
-    if (e.code === 'ArrowUp' || e.code === 'KeyW') {
-      snake.transitionUp()
-    } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {
-      snake.transitionDown()
-    } else if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
-      snake.transitionLeft()
-    } else if (e.code === 'ArrowRight' || e.code === 'KeyD') {
-      snake.transitionRight()
+  ws.addEventListener('open', function() {
+    function receiveAndRun({ data }) {
+      if (data.startsWith('id:')) {
+        const id = Number(data.substring(3))
+
+        ws.removeEventListener('message', receiveAndRun)
+        run(id, ws)
+      }
     }
+    ws.addEventListener('message', receiveAndRun)
   })
+})
 
+function run(id, ws) {
+  const canvas = document.getElementById('root')
+  canvas.height = GAME_SIZE
+  canvas.width = GAME_SIZE
+  const context = canvas.getContext('2d')
+
+  const game = new Game(id, context, ws)
+  game.addSnake(id)
+  game.addArrowKeyHandlers()
+  game.drawInitialSnake()
+  game.createNewFood()
 
   let lastDrawTime = 0
   let timePerFrame = 100
   function tick(tickStartTime) {
+    if (!playing) return
+
+    let valid = true
     if (tickStartTime - lastDrawTime > timePerFrame) {
       lastDrawTime = tickStartTime
 
-      snake.move()
-      if (snake.isAt(gameScreen.food)) {
-        snake.growBy(2)
+      valid = game.moveSnake()
+      if (game.snakeIsEating()) {
         timePerFrame -= 1
-        gameScreen.createNewFood()
+        game.feedSnake()
       }
     }
 
-    if (gameScreen.validateSnake(snake)) {
-      window.requestAnimationFrame(tick)
-    } else {
+    if (!valid) {
       alert('You lose!')
-      window.location.reload()
+      return
     }
+
+    game.draw()
+    window.requestAnimationFrame(tick)
   }
   window.requestAnimationFrame(tick)
-})
 
-class Snake {
-  constructor(length, x, y, segmentSize, color, context) {
-    this.vx = 1
-    this.vy = 0
-    this.segmentSize = segmentSize
-    this.color = color
-    this.context = context
-    this.segmentsLeftToGrow = 0
-
-    this.initializeFrom(length, x, y)
-  }
-
-  initializeFrom(length, x, y) {
-    this.snake = []
-
-    // Build from tail to head so head is at 0
-    for (let i = length; i > 0; --i) {
-      const point = new Point(
-        x + (i * this.vx * this.segmentSize),
-        y + (i * this.vy * this.segmentSize),
-      )
-      this.snake.push(point)
-
-      this.addPoint(point)
+  ws.addEventListener('message', function({ data }) {
+    const message = Message.createMessage(data)
+    if (!game.hasSnake(message.receivedId)) {
+      game.addSnake(message.receivedId)
+      game.sendSnake()
+      game.sendFood()
     }
 
-    this.headIdx = 0
+    if (message.isAddFoodMessage()) {
+      game.drawForeignFood(message.receivedId, message.point)
+    } else if (message.isDrawSnakeMessage()) {
+      game.drawForeignSnake(message.receivedId, message.points)
+    }
+  })
+
+  ws.addEventListener('close', function() {
+    playing = false
+    alert('Served closed socket')
+  })
+}
+
+class Snake {
+  constructor(id, segmentSize) {
+    this.snake = []
+
+    this.id = id
+    this.segmentSize = segmentSize
+    this.segmentsLeftToGrow = 0
+
+    this.directionChangeQueue = []
+    this.goRight()
+  }
+
+  initializeFrom(points) {
+    this.snake = []
+    points.forEach(point => this.add(point))
+  }
+
+  draw(context) {
+    const color = colorForId(this.id)
+    context.fillStyle = color
+    this.snake.forEach(({ x, y }) => {
+      context.fillRect(x, y, this.segmentSize, this.segmentSize)
+    })
+  }
+
+  add(point) {
+    this.snake.unshift(point)
+  }
+
+  removePoint() {
+    return this.snake.pop()
+  }
+
+  calculateNewHead() {
+    const currentHead = this.snake[0]
+    if (this.goingUp) {
+      return new Point(currentHead.x, currentHead.y - this.segmentSize)
+    } else if (this.goingDown) {
+      return new Point(currentHead.x, currentHead.y + this.segmentSize)
+    } else if (this.goingLeft) {
+      return new Point(currentHead.x - this.segmentSize, currentHead.y)
+    } else {
+      return new Point(currentHead.x + this.segmentSize, currentHead.y)
+    }
+  }
+
+  growing() {
+    return !!this.segmentsLeftToGrow
   }
 
   move() {
-    if (this.transitioningUp) {
-      this.goUp()
-    } else if (this.transitioningDown) {
-      this.goDown()
-    } else if (this.transitioningLeft) {
-      this.goLeft()
-    } else if (this.transitioningRight) {
-      this.goRight()
-    }
-    const currentHead = this.snake[this.headIdx]
-    const newHead = new Point(
-      currentHead.x + (this.vx * this.segmentSize),
-      currentHead.y + (this.vy * this.segmentSize),
-    )
+    const directionChange = this.directionChangeQueue.shift()
+    if (directionChange) directionChange()
 
-    if (this.segmentsLeftToGrow > 0) {
-      const newSnake = [newHead]
-      for (let i = this.headIdx; i < this.snake.length; ++i) {
-        newSnake.push(this.snake[i])
-      }
-      for (let i = 0; i < this.headIdx; ++i) {
-        newSnake.push(this.snake[i])
-      }
-      this.snake = newSnake
+    let removedPoint
+    if (this.growing()) {
       this.segmentsLeftToGrow--
-      this.headIdx = 0
     } else {
-      const tailIdx = (this.headIdx + this.snake.length - 1) % this.snake.length
-      this.removePoint(this.snake[tailIdx])
-
-      this.snake[tailIdx] = newHead
-      this.headIdx = tailIdx
+      removedPoint = this.removePoint()
     }
 
-    this.addPoint(newHead)
+    this.add(this.calculateNewHead())
+    return removedPoint
   }
 
-  transitionUp() {
-    this.transitioningUp = true
-  }
-  transitionDown() {
-    this.transitioningDown = true
-  }
-  transitionLeft() {
-    this.transitioningLeft = true
-  }
-  transitionRight() {
-    this.transitioningRight = true
+  clearDirection() {
+    this.goingRight = false
+    this.goingLeft = false
+    this.goingUp = false
+    this.goingDown = false
   }
 
   goUp() {
-    this.transitioningUp = false
-    if (this.vy === 1) return
-
-    this.vx = 0
-    this.vy = -1
+    if (this.goingDown) return
+    this.clearDirection()
+    this.goingUp = true
   }
 
   goDown() {
-    this.transitioningDown = false
-    if (this.vy === -1) return
-
-    this.vx = 0
-    this.vy = 1
+    if (this.goingUp) return
+    this.clearDirection()
+    this.goingDown = true
   }
 
   goLeft() {
-    this.transitioningLeft = false
-    if (this.vx === 1) return
-
-    this.vx = -1
-    this.vy = 0
+    if (this.goingRight) return
+    this.clearDirection()
+    this.goingLeft = true
   }
 
   goRight() {
-    this.transitioningRight = false
-    if (this.vx === -1) return
+    if (this.goingLeft) return
+    this.clearDirection()
+    this.goingRight = true
+  }
 
-    this.vx = 1
-    this.vy = 0
+  queueUp() {
+    this.directionChangeQueue.push(this.goUp.bind(this))
+  }
+
+  queueDown() {
+    this.directionChangeQueue.push(this.goDown.bind(this))
+  }
+
+  queueLeft() {
+    this.directionChangeQueue.push(this.goLeft.bind(this))
+  }
+
+  queueRight() {
+    this.directionChangeQueue.push(this.goRight.bind(this))
   }
 
   head() {
-    return this.snake[this.headIdx]
+    return this.snake[0]
   }
 
   growBy(n) {
     this.segmentsLeftToGrow += n
   }
 
-  isAt(point) {
+  at(point) {
     return this.head().key === point.key
   }
 
-  addPoint(point) {
-    this.context.fillStyle = this.color
-    this.context.fillRect(point.x, point.y, this.segmentSize, this.segmentSize)
+  points() {
+    return this.snake
   }
+}
 
-  removePoint(point) {
-    this.context.clearRect(point.x, point.y, this.segmentSize, this.segmentSize)
-  }
-
-  valid() {
-    const points = {}
-    for (let i = 0; i < this.snake.length; ++i) {
-      const point = this.snake[i]
-
-      if (points[point.key]) return false
-      points[point.key] = true
+const pointMask = (1 << 16) - 1
+class Point {
+  constructor(xOrKey, y) {
+    if (y === undefined) {
+      this.x = (xOrKey >> 16) & pointMask
+      this.y = xOrKey & pointMask
+      this.key = xOrKey
+    } else {
+      this.x = xOrKey
+      this.y = y
+      this.key = (this.x << 16) | this.y
     }
+  }
+}
+
+class Game {
+  constructor(id, context, ws) {
+    this.id = id
+    this.ws = ws
+    this.context = context
+    this.gameSpace = this.context.canvas.getBoundingClientRect()
+    this.snakes = {}
+    this.dangerPoints = {}
+    this.foods = {}
+  }
+
+  addSnake(id) {
+    this.snakes[id] = new Snake(id, BLOCK_SIZE, this.context)
+  }
+
+  hasSnake(id) {
+    return !!this.snakes[id]
+  }
+
+  drawForeignFood(id, point) {
+    if (this.foods[id]) delete this.dangerPoints[this.foods[id].key]
+    this.foods[id] = point
+    this.dangerPoints[point.key] = true
+  }
+
+  drawForeignSnake(id, points) {
+    this.snakes[id].points().forEach(point => delete this.dangerPoints[point.key])
+    this.snakes[id].initializeFrom(points)
+    this.snakes[id].points().forEach(point => this.dangerPoints[point.key] = true)
+  }
+
+  drawInitialSnake() {
+    const index = Number(this.id) - 1
+
+    const initialPoints = []
+    const y = index * 2 * BLOCK_SIZE
+    for (let i = 0; i < INITIAL_SNAKE_LENGTH; ++i) {
+      const x = i * BLOCK_SIZE
+      initialPoints.push(new Point(x, y))
+    }
+    this.snakes[this.id].initializeFrom(initialPoints)
+  }
+
+  moveSnake() {
+    const oldHead = this.snakes[this.id].head()
+    const removedPoint = this.snakes[this.id].move()
+    if (removedPoint) delete this.dangerPoints[removedPoint.key]
+
+    if (this.snakeIsValid()) {
+      this.dangerPoints[oldHead.key] = true
+      this.sendSnake()
+      return true
+    }
+
+    return false
+  }
+
+  draw() {
+    this.context.clearRect(0, 0, this.context.canvas.width, this.context.canvas.height)
+    Object.entries(this.foods).forEach(([id, food]) => this.drawFood(id, food))
+    Object.values(this.snakes).forEach(snake => snake.draw(this.context))
+  }
+
+  sendSnake() {
+    const points = this.snakes[this.id].points().map(point => point.key)
+    const message = `snake,${this.id},${points.join(',')}`
+    this.ws.send(message)
+  }
+
+  addArrowKeyHandlers() {
+    const snake = this.snakes[this.id]
+    window.addEventListener('keydown', function(e) {
+      if (e.defaultPrevented) {
+        return;
+      }
+
+      switch(e.code) {
+        case "KeyS":
+        case "ArrowDown":
+          snake.queueDown()
+          break
+        case "KeyW":
+        case "ArrowUp":
+          snake.queueUp()
+          break
+        case "KeyA":
+        case "ArrowLeft":
+          snake.queueLeft()
+          break
+        case "KeyD":
+        case "ArrowRight":
+          snake.queueRight()
+          break
+      }
+
+      e.preventDefault()
+    }, true)
+  }
+
+  createNewFood() {
+    let newFood = new Point(
+      Math.floor(Math.random() * (this.gameSpace.width / BLOCK_SIZE)) * BLOCK_SIZE,
+      Math.floor(Math.random() * (this.gameSpace.height / BLOCK_SIZE)) * BLOCK_SIZE,
+    )
+    while (this.dangerPoints[newFood.key] || this.snakes[this.id].at(newFood)) {
+      newFood = new Point(
+        Math.floor(Math.random() * (this.gameSpace.width / BLOCK_SIZE)) * BLOCK_SIZE,
+        Math.floor(Math.random() * (this.gameSpace.height / BLOCK_SIZE)) * BLOCK_SIZE,
+      )
+    }
+    this.foods[this.id] = newFood
+    this.sendFood()
+  }
+
+  drawFood(id, point) {
+    this.context.fillStyle = colorForId(id)
+    this.context.fillRect(point.x, point.y, BLOCK_SIZE, BLOCK_SIZE)
+  }
+
+  sendFood() {
+    const stateMessage = `food,${this.id},${this.foods[this.id].key}`
+    this.ws.send(stateMessage)
+  }
+
+  feedSnake() {
+    this.snakes[this.id].growBy(2)
+    this.createNewFood()
+  }
+
+  snakeIsEating() {
+    return this.snakes[this.id].at(this.foods[this.id])
+  }
+
+  snakeIsValid() {
+    const { key, x, y } = this.snakes[this.id].head()
+    const { width, height } = this.gameSpace
+    const snakeHeadOutOfBounds = (x < 0 || y < 0) || (x >= width || y >= height)
+    const snakeHitDangerPoint = !!this.dangerPoints[key]
+
+    return !snakeHeadOutOfBounds && !snakeHitDangerPoint
+  }
+}
+
+class Message {
+  static createMessage(data) {
+    if (data.startsWith('food,')) {
+      return new AddFoodMessage(data)
+    }
+    if (data.startsWith('snake,')) {
+      return new DrawSnakeMessage(data)
+    }
+    throw new Error(`Unknown data: ${data}`)
+  }
+
+  constructor(data) {
+    this.splitData = data.split(',')
+    this.action = this.splitData[0]
+    this.receivedId = Number(this.splitData[1])
+  }
+
+  isAddFoodMessage() {
+    return false
+  }
+
+  isDrawSnakeMessage() {
+    return false
+  }
+}
+
+class AddFoodMessage extends Message {
+  constructor(data) {
+    super(data)
+    this.point = new Point(this.splitData[2])
+  }
+
+  isAddFoodMessage() {
     return true
   }
 }
 
-class Point {
-  constructor(x, y) {
-    this.x = x
-    this.y = y
-    this.key = this.x << 16 | this.y
-  }
-}
-
-class GameScreen {
-  constructor(canvas, size, foodColor) {
-    this.canvas = canvas
-    this.canvas.height = size
-    this.canvas.width = size
-    this.gameSpace = canvas.getBoundingClientRect()
-    this.context = canvas.getContext('2d')
-
-    this.foodColor = foodColor
-    this.createNewFood()
+class DrawSnakeMessage extends Message {
+  constructor(data) {
+    super(data)
+    this.points = this.splitData.slice(2).map(pointKey => new Point(Number(pointKey)))
   }
 
-  createNewFood() {
-    this.food = new Point(
-      Math.floor(Math.random() * (this.canvas.width / BLOCK_SIZE)) * BLOCK_SIZE,
-      Math.floor(Math.random() * (this.canvas.height / BLOCK_SIZE)) * BLOCK_SIZE,
-    )
-    this.drawFood()
-  }
-
-  drawFood() {
-    this.context.fillStyle = this.foodColor
-    this.context.fillRect(this.food.x, this.food.y, BLOCK_SIZE, BLOCK_SIZE)
-  }
-
-  validateSnake(snake) {
-    const { x, y } = snake.head()
-    const { width, height } = this.gameSpace
-    const snakeHeadOutOfBounds = (x < 0 || y < 0) || (x >= width || y >= height)
-
-    return !snakeHeadOutOfBounds && snake.valid()
+  isDrawSnakeMessage() {
+    return true
   }
 }
