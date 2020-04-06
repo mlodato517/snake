@@ -23,7 +23,7 @@ ngrok http 3012 # In another terminal window
 ```
 
 Then, because `index.js` is currently hard coded to `127.0.0.1:3012` you need to change
-[`host`](https://github.com/mlodato517/snake/blob/master/build/index.js#L18) in `index.js`
+[`host`](https://github.com/mlodato517/snake/blob/master/build/index.js#L18) in `build/index.js`
 to be the address output by `ngrok http 3012` for example:
 ```js
 const host = 'a50c4f04.ngrok.io'
