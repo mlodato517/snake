@@ -15,7 +15,7 @@ function colorForId(id) {
   return COLORS[index % COLORS.length]
 }
 
-const host = '127.0.0.1:3012'
+const host = '127.0.0.1:3012/ws/'
 document.addEventListener('DOMContentLoaded', function() {
   const url = 'ws://' + host
   const ws = new WebSocket(url);
