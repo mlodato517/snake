@@ -1,151 +1,115 @@
-use std::{
-    collections::HashMap,
-    fs,
-    io::Error as IoError,
-    net::SocketAddr,
-    str,
-    sync::{Arc, Mutex},
-};
+use actix::*;
+use actix_files as fs;
+use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer};
+use actix_web_actors::ws;
 
-use futures::prelude::*;
-use futures::{
-    channel::mpsc::{unbounded, UnboundedSender},
-    future, join, pin_mut,
-};
+mod server;
 
-use async_std::net::{TcpListener, TcpStream};
-use async_std::task;
-use tungstenite::protocol::Message;
+/// Entry point for our route
+async fn chat_route(
+    req: HttpRequest,
+    stream: web::Payload,
+    srv: web::Data<Addr<server::ChatServer>>,
+) -> Result<HttpResponse, Error> {
+    ws::start(
+        WsChatSession::new(srv.get_ref().clone()),
+        &req,
+        stream,
+    )
+}
 
-type Tx = UnboundedSender<Message>;
-type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
+struct WsChatSession {
+    // address of chat server so the session can send messages to the server
+    addr: Addr<server::ChatServer>,
+    // id of session - each connection gets an id after server
+    // handles Connect message
+    id: usize,
+}
 
-async fn handle_websocket_connection(
-    peer_map: PeerMap,
-    raw_stream: TcpStream,
-    addr: SocketAddr,
-    id: u8,
-) {
-    println!("Incoming TCP connection from: {}", addr);
+impl WsChatSession {
+    fn new(addr: Addr<server::ChatServer>) -> Self {
+        WsChatSession { addr, id: 0 }
+    }
+}
 
-    let ws_stream = async_tungstenite::accept_async(raw_stream)
-        .await
-        .expect("Error during the websocket handshake occurred");
-    println!("WebSocket connection established: {}", addr);
+impl Actor for WsChatSession {
+    type Context = ws::WebsocketContext<Self>;
 
-    let (tx, rx) = unbounded();
+    /// Method is called on actor start.
+    /// We register ws session with ChatServer
+    fn started(&mut self, ctx: &mut Self::Context) {
+        // register self in chat server. `AsyncContext::wait` register
+        // future within context, but context waits until this future resolves
+        // before processing any other events.
+        // HttpContext::state() is instance of WsChatSessionState, state is shared
+        // across all routes within application
+        let addr = ctx.address(); // This is the address of the session actor
+        self.addr
+            .send(server::Connect {
+                addr: addr.recipient(), // addr.recipient is address of sender?
+            })
+            .into_actor(self)
+            .then(|connect_result, session_actor, ctx| {
+                if let Ok(sent_id) = connect_result {
+                    session_actor.id = sent_id; // store the ID from the server
+                } else {
+                    ctx.stop();
+                }
+                fut::ready(())
+            })
+            .wait(ctx);
+    }
 
-    // Alert client of their ID.
-    tx.unbounded_send(Message::Text(format!("id:{}", id)))
-        .unwrap();
+    fn stopping(&mut self, _: &mut Self::Context) -> Running {
+        // notify chat server
+        self.addr.do_send(server::Disconnect { id: self.id });
+        Running::Stop
+    }
+}
 
-    // Insert the write part of this peer to the peer map.
-    peer_map.lock().unwrap().insert(addr, tx);
+/// Handle messages from chat server, we simply send it to peer websocket
+impl Handler<server::Message> for WsChatSession {
+    type Result = ();
 
-    let (outgoing, incoming) = ws_stream.split();
+    // I have no idea what this is. This is for when the session receives messages?
+    fn handle(&mut self, msg: server::Message, ctx: &mut Self::Context) {
+        ctx.text(msg.0);
+    }
+}
 
-    let broadcast_incoming = incoming.try_for_each(|msg| {
-        // println!("{} | {:?}", addr, msg);
-        if msg.is_close() { return future::ok(()) }
+/// WebSocket message handler
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsChatSession {
+    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        let msg = match msg {
+            Err(_) => {
+                ctx.stop();
+                return;
+            }
+            Ok(msg) => msg,
+        };
 
-        let peers = peer_map.lock().unwrap();
-
-        // We want to broadcast the message to everyone except ourselves.
-        let broadcast_recipients = peers
-            .iter()
-            .filter(|(peer_addr, _)| peer_addr != &&addr)
-            .map(|(_, ws_sink)| ws_sink);
-
-        for recp in broadcast_recipients {
-            recp.unbounded_send(msg.clone()).unwrap();
+        if let ws::Message::Text(text) = msg {
+            let msg = text.trim().to_owned();
+            self.addr.do_send(server::ClientMessage { id: self.id, msg })
+        } else if let ws::Message::Close(_) = msg {
+            ctx.stop();
         }
-
-        future::ok(())
-    });
-
-    let receive_from_others = rx.map(Ok).forward(outgoing);
-
-    pin_mut!(broadcast_incoming, receive_from_others);
-    future::select(broadcast_incoming, receive_from_others).await;
-
-    println!("{} disconnected", &addr);
-    peer_map.lock().unwrap().remove(&addr);
-}
-
-async fn handle_websocket() -> Result<(), IoError> {
-    let websocket_address = "127.0.0.1:3012".to_string();
-
-    let state = PeerMap::new(Mutex::new(HashMap::new()));
-
-    // Create the event loop and TCP listener we'll accept connections on.
-    let try_websocket_socket = TcpListener::bind(&websocket_address).await;
-    let websocket_listener = try_websocket_socket.expect("Failed to bind");
-    println!("Listening on: {}", websocket_address);
-
-    // Let's spawn the handling of each connection in a separate task.
-    let mut id = 1;
-    while let Ok((stream, addr)) = websocket_listener.accept().await {
-        task::spawn(handle_websocket_connection(state.clone(), stream, addr, id));
-        id = (id % 8) + 1;
-    }
-
-    Ok(())
-}
-
-async fn send_rest_response(mut raw_stream: TcpStream, response: &str) -> Result<(), IoError> {
-    let http_response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
-        response.len(),
-        response,
-    );
-    raw_stream.write(http_response.as_bytes()).await?;
-    raw_stream.flush().await?;
-
-    Ok(())
-}
-
-async fn handle_rest_connection(mut raw_stream: TcpStream) -> Result<(), IoError> {
-    let mut buffer = [0; 32];
-    raw_stream.read(&mut buffer).await?;
-    let request = str::from_utf8(&buffer).unwrap();
-
-    if request.starts_with("GET / HTTP/1.1") {
-        let response = fs::read_to_string("build/index.html")?;
-        send_rest_response(raw_stream, &response).await?
-    } else if request.starts_with("GET /index.js HTTP/1.1") {
-        let response = fs::read_to_string("build/index.js")?;
-        send_rest_response(raw_stream, &response).await?
-    }
-
-    Ok(())
-}
-
-async fn handle_rest() -> Result<(), IoError> {
-    let rest_address = "127.0.0.1:3013".to_string();
-
-    let try_rest_socket = TcpListener::bind(&rest_address).await;
-    let rest_listener = try_rest_socket.expect("Failed to bind");
-    println!("Listening on: {}", rest_address);
-
-    // Let's spawn the handling of each connection in a separate task.
-    while let Ok((stream, _addr)) = rest_listener.accept().await {
-        task::spawn(handle_rest_connection(stream));
-    }
-
-    Ok(())
-}
-
-async fn run() -> Result<(), IoError> {
-    let (ws_res, rest_res) = join!(handle_websocket(), handle_rest());
-    if ws_res.is_err() {
-        ws_res
-    } else if rest_res.is_err() {
-        rest_res
-    } else {
-        Ok(())
     }
 }
 
-fn main() -> Result<(), IoError> {
-    task::block_on(run())
+#[actix_rt::main]
+async fn main() -> std::io::Result<()> {
+    // Start chat server actor
+    let server = server::ChatServer::default().start();
+
+    // Create Http server with websocket support
+    HttpServer::new(move || {
+        App::new()
+            .data(server.clone())
+            .service(web::resource("/ws/").to(chat_route))
+            .service(fs::Files::new("/", "build/").index_file("index.html"))
+    })
+    .bind("127.0.0.1:3012")?
+    .run()
+    .await
 }
